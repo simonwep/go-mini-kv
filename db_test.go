@@ -9,11 +9,15 @@ import (
 	"time"
 )
 
+var dbIndex = 0
+
 func createDb(t *testing.T) *DB {
 	dir, err := os.Getwd()
-	path := filepath.Join(dir, "_test", "db", strconv.FormatInt(time.Now().Unix(), 10))
+	id := strconv.Itoa(time.Now().Nanosecond()) + "_" + strconv.Itoa(dbIndex)
+	path := filepath.Join(dir, "_test", "db", id)
 	err = os.MkdirAll(path, 0777)
 	db, err := Open(path)
+	dbIndex += 1
 	assert.Nil(t, err)
 	return db
 }
@@ -45,9 +49,11 @@ func TestDB_Get(t *testing.T) {
 		bValue := []byte(value)
 
 		err := db.Set(bKey, bValue)
+		assert.Nil(t, err)
+
 		result, err := db.Get(bKey)
 		assert.Nil(t, err)
-		assert.Equal(t, result, bValue)
+		assert.Equal(t, bValue, result)
 	}
 
 	// Read values
