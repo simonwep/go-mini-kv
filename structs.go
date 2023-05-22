@@ -39,7 +39,6 @@ func EncodeValuePointer(pointer *ValuePointer) []byte {
 }
 
 func (v *ValuePointer) IsZero() bool {
-	// TODO: What about empty values?
 	return v.offset == 0 && v.size == 0
 }
 

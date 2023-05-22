@@ -25,6 +25,15 @@ func Open(loc string) (*DB, error) {
 		return nil, fmt.Errorf("failed to open database files: %v / %v", indexErr, dataErr)
 	}
 
+	// Create buffer for index in case it's a new file
+	if stat, err := index.Stat(); err != nil {
+		return nil, fmt.Errorf("failed read database file: %v", err)
+	} else if stat.Size() == 0 {
+		if _, err := data.Write([]byte{255}); err != nil {
+			return nil, fmt.Errorf("failed to initialize database file: %v", err)
+		}
+	}
+
 	return &DB{index, data}, nil
 }
 

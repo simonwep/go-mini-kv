@@ -46,6 +46,7 @@ func TestDB_Set(t *testing.T) {
 
 func TestDB_Get(t *testing.T) {
 	values := map[string]string{
+		"":      "",
 		"foo":   "bar",
 		"hello": "world",
 		"baz":   "bam bar",
