@@ -13,24 +13,19 @@ import (
 // A chunk represents a database entry.
 // Each chunk looks like the following:
 // - key: 32 bytes, a sha256 hash. The first bit indicates if this chunk can be garbage collected.
-// - offset: 8 bytes, an uint64 indicating the offset of the data in the data file.
-// - size: 8 bytes, an uint64 indicating the size of the data stored.
-const chunkSize = 32 + 8 + 8
+// - offset: 8 bytes, an uint32 indicating the offset of the data in the data file.
+// - size: 8 bytes, an uint32 indicating the size of the data stored.
+const chunkSize = 32 + 4 + 4
 
 type Entry struct {
-	entryOffset int64
-	dataOffset  int64
-	size        int64
+	entryOffset uint32
+	offset      uint32
+	size        uint32
 }
 
 type DB struct {
-
-	// Files
-	index *os.File
-	data  *os.File
-
-	// In-memory index
-	//entries map[[32]byte]Entry
+	index *os.File // Database index
+	data  *os.File // Actual data
 }
 
 // Open returns a new database instance.
@@ -44,26 +39,20 @@ func Open(loc string) (*DB, error) {
 		return nil, fmt.Errorf("failed to open database files: %v / %v", indexErr, dataErr)
 	}
 
-	//entries, err := loadEntries(index)
-	//if err != nil {
-	//	return nil, err
-	//}
-
-	db := &DB{index, data}
-
-	return db, nil
+	return &DB{index, data}, nil
 }
 
 // Set can be used to store a new value based on the key.
 func (db *DB) Set(key []byte, value []byte) error {
 	hashedKey := hashKey(key)
-	entry, err := db.getEntry(hashedKey)
+	entry, err := db.getIndex(hashedKey)
 
 	if err != nil {
 		return err
 	}
 
 	// Key doesn't exist yet
+	// TODO: Handle system errors
 	if entry == nil {
 
 		// Write data
@@ -78,8 +67,8 @@ func (db *DB) Set(key []byte, value []byte) error {
 
 		chunk := make([]byte, chunkSize)
 		copy(chunk[:32], hashedKey[:])
-		copy(chunk[32:40], toBytes(info.Size()))
-		copy(chunk[40:], toBytes(int64(len(value))))
+		copy(chunk[32:36], toBytes(uint32(info.Size())))
+		copy(chunk[36:], toBytes(uint32(len(value))))
 
 		if _, err = db.index.Write(chunk); err != nil {
 			return fmt.Errorf("failed storing index: %v", err)
@@ -91,7 +80,7 @@ func (db *DB) Set(key []byte, value []byte) error {
 
 // Get returns the value for the given key, or nil of there is none.
 func (db *DB) Get(key []byte) ([]byte, error) {
-	entry, err := db.getEntry(key)
+	entry, err := db.getIndex(key)
 
 	if err != nil {
 		return nil, err
@@ -100,53 +89,55 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	}
 
 	buffer := make([]byte, entry.size)
-	bytesRead, err := db.data.ReadAt(buffer, entry.dataOffset)
+	bytesRead, err := db.data.ReadAt(buffer, int64(entry.offset))
 
-	if int64(bytesRead) != entry.size {
-		return nil, fmt.Errorf("data expected to have %v bytes, but only received %v", entry.size, bytesRead)
-	} else if err != nil {
+	if err != nil {
 		return nil, fmt.Errorf("failed to read from databas: %v", err)
+	} else if uint32(bytesRead) != entry.size {
+		return nil, fmt.Errorf("data expected to have %v bytes, but only received %v", entry.size, bytesRead)
 	}
 
 	return buffer, nil
 }
 
-// Delete removes a key and value associated.
+// Delete removes a key and the value associated.
 func (db *DB) Delete(key []byte) (bool, error) {
-	entry, err := db.getEntry(key)
+	entry, err := db.getIndex(key)
 
 	if err != nil {
 		return false, fmt.Errorf("failed to retrieve entry: %v", err)
 	} else if entry == nil {
 		return false, nil
-	} else if err := db.deleteEntry(entry); err != nil {
+	} else if err := db.deleteIndex(entry); err != nil {
 		return false, err
 	}
 
 	return true, nil
 }
 
-func (db *DB) deleteEntry(entry *Entry) error {
+// deleteIndex takes an entry, marks it ready for garbage collection and removes it
+func (db *DB) deleteIndex(entry *Entry) error {
 	zeroedChunk := make([]byte, chunkSize)
 	zeroedChunk[0] = 128 // mark ready for garbage collection
 
-	if _, err := db.index.WriteAt(zeroedChunk, entry.entryOffset); err != nil {
+	if _, err := db.index.WriteAt(zeroedChunk, int64(entry.entryOffset)); err != nil {
 		return fmt.Errorf("failed to write to index: %v", err)
 	}
 
 	return nil
 }
 
-// getEntry returns the information relating the given key.
+// TODO: Move to separate module
+// getIndex returns the information relating the given key.
 // In case there is no such entry it returns nil.
-func (db *DB) getEntry(key []byte) (*Entry, error) {
+func (db *DB) getIndex(key []byte) (*Entry, error) {
 	hashedKey := hashKey(key)
 	chunk := make([]byte, chunkSize)
-	offset := int64(0)
+	offset := uint32(0)
 
 	// Loop trough index file to find offset
 	for {
-		_, err := db.index.ReadAt(chunk, offset)
+		_, err := db.index.ReadAt(chunk, int64(offset))
 
 		if err == io.EOF {
 			break
@@ -156,8 +147,8 @@ func (db *DB) getEntry(key []byte) (*Entry, error) {
 			if reflect.DeepEqual(chunk[:32], hashedKey) {
 				return &Entry{
 					entryOffset: offset,
-					dataOffset:  fromBytes(chunk[32:40]),
-					size:        fromBytes(chunk[40:48]),
+					offset:      fromBytes(chunk[32:36]),
+					size:        fromBytes(chunk[36:40]),
 				}, nil
 			}
 		}
@@ -178,14 +169,13 @@ func hashKey(key []byte) []byte {
 }
 
 // toBytes takes an int64 and converts it into a byte array.
-func toBytes(v int64) []byte {
-	arr := make([]byte, 8)
-	binary.PutVarint(arr, v)
+func toBytes(v uint32) []byte {
+	arr := make([]byte, 4)
+	binary.BigEndian.PutUint32(arr, v)
 	return arr
 }
 
 // fromBytes takes a byte array and converts it into an int64.
-func fromBytes(b []byte) int64 {
-	value, _ := binary.Varint(b)
-	return value
+func fromBytes(b []byte) uint32 {
+	return binary.BigEndian.Uint32(b)
 }
