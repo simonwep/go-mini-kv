@@ -2,26 +2,12 @@ package go_mini_kv
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 )
-
-// A chunk represents a database entry.
-// Each chunk looks like the following:
-// - key: 32 bytes, a sha256 hash. The first bit indicates if this chunk can be garbage collected.
-// - offset: 8 bytes, an uint32 indicating the offset of the data in the data file.
-// - size: 8 bytes, an uint32 indicating the size of the data stored.
-const chunkSize = 32 + 4 + 4
-
-type Entry struct {
-	entryOffset uint32
-	offset      uint32
-	size        uint32
-}
 
 type DB struct {
 	index *os.File // Database index
@@ -45,32 +31,26 @@ func Open(loc string) (*DB, error) {
 // Set can be used to store a new value based on the key.
 func (db *DB) Set(key []byte, value []byte) error {
 	hashedKey := hashKey(key)
-	entry, err := db.getIndex(hashedKey)
 
-	if err != nil {
+	if entry, _, err := db.findValuePointerForKey(hashedKey); err != nil {
 		return err
-	}
-
-	// Key doesn't exist yet
-	// TODO: Handle system errors
-	if entry == nil {
-
-		// Write data
+	} else if entry == nil {
 		info, err := db.data.Stat()
 		if err != nil {
 			return fmt.Errorf("failed retrieving data info: %v", err)
 		}
 
+		chunk := EncodeValuePointer(&ValuePointer{
+			hash:   hashedKey,
+			size:   uint32(len(value)),
+			offset: uint32(info.Size()),
+		})
+
+		// Write data and value pointer.
+		// If the latter fails, we won't have a broken database but data to garbage collect.
 		if _, err = db.data.Write(value); err != nil {
 			return fmt.Errorf("failed writing data to file: %v", err)
-		}
-
-		chunk := make([]byte, chunkSize)
-		copy(chunk[:32], hashedKey[:])
-		copy(chunk[32:36], toBytes(uint32(info.Size())))
-		copy(chunk[36:], toBytes(uint32(len(value))))
-
-		if _, err = db.index.Write(chunk); err != nil {
+		} else if _, err = db.index.Write(chunk); err != nil {
 			return fmt.Errorf("failed storing index: %v", err)
 		}
 	}
@@ -80,7 +60,7 @@ func (db *DB) Set(key []byte, value []byte) error {
 
 // Get returns the value for the given key, or nil of there is none.
 func (db *DB) Get(key []byte) ([]byte, error) {
-	entry, err := db.getIndex(key)
+	entry, _, err := db.findValuePointerForKey(key)
 
 	if err != nil {
 		return nil, err
@@ -102,37 +82,27 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 
 // Delete removes a key and the value associated.
 func (db *DB) Delete(key []byte) (bool, error) {
-	entry, err := db.getIndex(key)
+	pointer, offset, err := db.findValuePointerForKey(key)
 
 	if err != nil {
-		return false, fmt.Errorf("failed to retrieve entry: %v", err)
-	} else if entry == nil {
+		return false, fmt.Errorf("failed to retrieve pointer: %v", err)
+	} else if pointer == nil {
 		return false, nil
-	} else if err := db.deleteIndex(entry); err != nil {
-		return false, err
+	}
+
+	zeroedChunk := make([]byte, ValuePointerSize)
+	if _, err := db.index.WriteAt(zeroedChunk, int64(offset)); err != nil {
+		return false, fmt.Errorf("failed to write to file: %v", err)
 	}
 
 	return true, nil
 }
 
-// deleteIndex takes an entry, marks it ready for garbage collection and removes it
-func (db *DB) deleteIndex(entry *Entry) error {
-	zeroedChunk := make([]byte, chunkSize)
-	zeroedChunk[0] = 128 // mark ready for garbage collection
-
-	if _, err := db.index.WriteAt(zeroedChunk, int64(entry.entryOffset)); err != nil {
-		return fmt.Errorf("failed to write to index: %v", err)
-	}
-
-	return nil
-}
-
-// TODO: Move to separate module
-// getIndex returns the information relating the given key.
+// findValuePointerForKey returns the information relating the given key.
 // In case there is no such entry it returns nil.
-func (db *DB) getIndex(key []byte) (*Entry, error) {
+func (db *DB) findValuePointerForKey(key []byte) (*ValuePointer, uint32, error) {
 	hashedKey := hashKey(key)
-	chunk := make([]byte, chunkSize)
+	chunk := make([]byte, ValuePointerSize)
 	offset := uint32(0)
 
 	// Loop trough index file to find offset
@@ -142,40 +112,26 @@ func (db *DB) getIndex(key []byte) (*Entry, error) {
 		if err == io.EOF {
 			break
 		} else if err != nil {
-			return nil, fmt.Errorf("failed to read file at %v: %v", offset, err)
-		} else if chunk[0]&128 != 128 { // check if chunk is not marked for garbage collection
-			if reflect.DeepEqual(chunk[:32], hashedKey) {
-				return &Entry{
-					entryOffset: offset,
-					offset:      fromBytes(chunk[32:36]),
-					size:        fromBytes(chunk[36:40]),
-				}, nil
+			return nil, 0, fmt.Errorf("failed to read file at %v: %v", offset, err)
+		} else if reflect.DeepEqual(chunk[:32], hashedKey) {
+			pointer, err := DecodeValuePointer(chunk)
+
+			if pointer.IsZero() {
+				return nil, offset, nil // Entry still exist, but marked for gc
+			} else {
+				return pointer, offset, err
 			}
 		}
 
-		offset += chunkSize
+		offset += ValuePointerSize
 	}
 
-	return nil, nil
+	return nil, 0, nil // Entry not found
 }
 
 // hashKey hashes the key for a database entry.
 func hashKey(key []byte) []byte {
 	hash := sha256.New()
 	hash.Write(key)
-	sum := hash.Sum(nil)
-	sum[0] &= 0b01111111 // the first bit is reserved
-	return sum
-}
-
-// toBytes takes an int64 and converts it into a byte array.
-func toBytes(v uint32) []byte {
-	arr := make([]byte, 4)
-	binary.BigEndian.PutUint32(arr, v)
-	return arr
-}
-
-// fromBytes takes a byte array and converts it into an int64.
-func fromBytes(b []byte) uint32 {
-	return binary.BigEndian.Uint32(b)
+	return hash.Sum(nil)
 }
