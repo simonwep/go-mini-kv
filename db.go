@@ -9,23 +9,25 @@ import (
 )
 
 type DB struct {
-	index *os.File // Database index
-	data  *os.File // Actual data
+	dict *os.File // Database dict
+	data *os.File // Actual data
 }
+
+const filePermissions = os.O_RDWR | os.O_CREATE | os.O_TRUNC
 
 // Open returns a new database instance.
 func Open(loc string) (*DB, error) {
 
 	// Create files
-	index, indexErr := os.OpenFile(filepath.Join(loc, "index.bin"), os.O_RDWR|os.O_CREATE, 0666)
-	data, dataErr := os.OpenFile(filepath.Join(loc, "data.db"), os.O_RDWR|os.O_CREATE, 0666)
+	dict, dictErr := os.OpenFile(filepath.Join(loc, "dict.bin"), filePermissions, 0666)
+	data, dataErr := os.OpenFile(filepath.Join(loc, "data.db"), filePermissions, 0666)
 
-	if indexErr != nil || dataErr != nil {
-		return nil, fmt.Errorf("failed to open database files: %v / %v", indexErr, dataErr)
+	if dictErr != nil || dataErr != nil {
+		return nil, fmt.Errorf("failed to open database files: %v / %v", dictErr, dataErr)
 	}
 
-	// Create buffer for index in case it's a new file
-	if stat, err := index.Stat(); err != nil {
+	// Create buffer for dict in case it's a new file
+	if stat, err := dict.Stat(); err != nil {
 		return nil, fmt.Errorf("failed read database file: %v", err)
 	} else if stat.Size() == 0 {
 		if _, err := data.Write([]byte{255}); err != nil {
@@ -33,7 +35,7 @@ func Open(loc string) (*DB, error) {
 		}
 	}
 
-	return &DB{index, data}, nil
+	return &DB{dict, data}, nil
 }
 
 // Set can be used to store a new value based on the key.
@@ -61,8 +63,8 @@ func (db *DB) Set(key []byte, value []byte) error {
 		// If the latter fails, we won't have a broken database but data to garbage collect.
 		if _, err = db.data.Write(value); err != nil {
 			return fmt.Errorf("failed writing data to file: %v", err)
-		} else if _, err = db.index.Write(chunk); err != nil {
-			return fmt.Errorf("failed storing index: %v", err)
+		} else if _, err = db.dict.Write(chunk); err != nil {
+			return fmt.Errorf("failed storing dict: %v", err)
 		}
 	}
 
@@ -102,11 +104,71 @@ func (db *DB) Delete(key []byte) (bool, error) {
 	}
 
 	zeroedChunk := make([]byte, ValuePointerSize)
-	if _, err := db.index.WriteAt(zeroedChunk, int64(offset)); err != nil {
+	if _, err := db.dict.WriteAt(zeroedChunk, int64(offset)); err != nil {
 		return false, fmt.Errorf("failed to write to file: %v", err)
 	}
 
 	return true, nil
+}
+
+// Stat returns statistical information about the database.
+func (db *DB) Stat() (*DataBaseStats, error) {
+	dictInfo, dictErr := db.dict.Stat()
+	if dictErr != nil {
+		return nil, dictErr
+	}
+
+	dataInfo, dataErr := db.data.Stat()
+	if dataErr != nil {
+		return nil, dictErr
+	}
+
+	return &DataBaseStats{
+		entries: uint32(dictInfo.Size() / ValuePointerSize),
+		data:    uint32(dataInfo.Size() - 1),
+		dict:    uint32(dictInfo.Size()),
+	}, nil
+}
+
+// RunGC runs the garbage collector to compress both the value pointer file
+// and remove no longer needed data from the data file.
+// TODO: keep track of offset for removal
+func (db *DB) RunGC() error {
+	chunk := make([]byte, ValuePointerSize)
+	writeOffset := int64(-1)
+	readOffset := int64(0)
+
+	// shift data to the left
+	for {
+		_, err := db.dict.ReadAt(chunk, readOffset)
+
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return fmt.Errorf("failed to read file at %v: %v", readOffset, err)
+		} else if !IsValuePointerEmpty(chunk) {
+			if writeOffset != -1 {
+				if _, err := db.dict.WriteAt(chunk, writeOffset); err != nil {
+					return fmt.Errorf("failed to shift data: %v", err)
+				}
+
+				writeOffset += ValuePointerSize
+			} else {
+				writeOffset = ValuePointerSize
+			}
+		}
+
+		readOffset += ValuePointerSize
+	}
+
+	// truncate file
+	if err := db.dict.Truncate(writeOffset); err != nil {
+		return fmt.Errorf("failed to truncate dictionary: %v", err)
+	} else if _, err := db.dict.Seek(0, 0); err != nil {
+		return fmt.Errorf("failed reset dictionary: %v", err)
+	}
+
+	return nil
 }
 
 // findValuePointerForKey returns the information relating the given key.
@@ -120,20 +182,21 @@ func (db *DB) findValuePointerForKey(key []byte) (*ValuePointer, uint32, error) 
 	chunk := make([]byte, ValuePointerSize)
 	offset := uint32(0)
 
-	// Loop trough index file to find offset
+	// Loop trough dict file to find offset
 	for {
-		_, err := db.index.ReadAt(chunk, int64(offset))
+		_, err := db.dict.ReadAt(chunk, int64(offset))
 
 		if err == io.EOF {
 			break
 		} else if err != nil {
 			return nil, 0, fmt.Errorf("failed to read file at %v: %v", offset, err)
 		} else if reflect.DeepEqual(chunk[:32], hashedKey) {
-			pointer, err := DecodeValuePointer(chunk)
 
-			if pointer.IsZero() {
-				return nil, offset, nil // Entry still exist, but marked for gc
+			// Check if pointer is marked for garbage collection
+			if IsValuePointerEmpty(chunk) {
+				return nil, offset, nil
 			} else {
+				pointer, err := DecodeValuePointer(chunk)
 				return pointer, offset, err
 			}
 		}
