@@ -1,7 +1,6 @@
 package go_mini_kv
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -39,7 +38,10 @@ func Open(loc string) (*DB, error) {
 
 // Set can be used to store a new value based on the key.
 func (db *DB) Set(key []byte, value []byte) error {
-	hashedKey := hashKey(key)
+	hashedKey, err := SHA256(key)
+	if err != nil {
+		return err
+	}
 
 	if entry, _, err := db.findValuePointerForKey(hashedKey); err != nil {
 		return err
@@ -110,7 +112,11 @@ func (db *DB) Delete(key []byte) (bool, error) {
 // findValuePointerForKey returns the information relating the given key.
 // In case there is no such entry it returns nil.
 func (db *DB) findValuePointerForKey(key []byte) (*ValuePointer, uint32, error) {
-	hashedKey := hashKey(key)
+	hashedKey, err := SHA256(key)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	chunk := make([]byte, ValuePointerSize)
 	offset := uint32(0)
 
@@ -136,11 +142,4 @@ func (db *DB) findValuePointerForKey(key []byte) (*ValuePointer, uint32, error) 
 	}
 
 	return nil, 0, nil // Entry not found
-}
-
-// hashKey hashes the key for a database entry.
-func hashKey(key []byte) []byte {
-	hash := sha256.New()
-	hash.Write(key)
-	return hash.Sum(nil)
 }

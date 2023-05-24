@@ -39,7 +39,7 @@ func EncodeValuePointer(pointer *ValuePointer) []byte {
 }
 
 func (v *ValuePointer) IsZero() bool {
-	return v.offset == 0 && v.size == 0
+	return v.offset == 0
 }
 
 // toBytes takes an int64 and converts it into a byte array.

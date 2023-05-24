@@ -1,4 +1,4 @@
-module github.com/Simonwep/go-mini-kv
+module github.com/simonwep/go-mini-kv
 
 go 1.20
 
