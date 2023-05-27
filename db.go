@@ -85,7 +85,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	bytesRead, err := db.data.ReadAt(buffer, int64(entry.offset))
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to read from databas: %v", err)
+		return nil, fmt.Errorf("failed to read from database: %v", err)
 	} else if uint32(bytesRead) != entry.size {
 		return nil, fmt.Errorf("data expected to have %v bytes, but only received %v", entry.size, bytesRead)
 	}
@@ -94,6 +94,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 }
 
 // Delete removes a key and the value associated.
+// TODO: allow list of keys
 func (db *DB) Delete(key []byte) (bool, error) {
 	pointer, offset, err := db.findValuePointerForKey(key)
 
@@ -134,38 +135,66 @@ func (db *DB) Stat() (*DataBaseStats, error) {
 // and remove no longer needed data from the data file.
 // TODO: keep track of offset for removal
 func (db *DB) RunGC() error {
-	chunk := make([]byte, ValuePointerSize)
-	writeOffset := int64(-1)
-	readOffset := int64(0)
+	dictChunk := make([]byte, ValuePointerSize)
+	dictWriteOffset := int64(0)
+	dictReadOffset := int64(0)
+
+	dataWriteOffset := uint32(1)
 
 	// shift data to the left
 	for {
-		_, err := db.dict.ReadAt(chunk, readOffset)
-
-		if err == io.EOF {
+		if _, err := db.dict.ReadAt(dictChunk, dictReadOffset); err == io.EOF {
 			break
 		} else if err != nil {
-			return fmt.Errorf("failed to read file at %v: %v", readOffset, err)
-		} else if !IsValuePointerEmpty(chunk) {
-			if writeOffset != -1 {
-				if _, err := db.dict.WriteAt(chunk, writeOffset); err != nil {
-					return fmt.Errorf("failed to shift data: %v", err)
-				}
-
-				writeOffset += ValuePointerSize
-			} else {
-				writeOffset = ValuePointerSize
-			}
+			return fmt.Errorf("failed to read file at %v: %v", dictReadOffset, err)
 		}
 
-		readOffset += ValuePointerSize
+		valuePointer, err := DecodeValuePointer(dictChunk)
+		if err != nil {
+			return fmt.Errorf("database corrupt: %v", err)
+		}
+
+		// check if there is a "hole"
+		if !valuePointer.IsEmpty() {
+
+			// check if there is space to shift data
+			if dictReadOffset > dictWriteOffset {
+
+				// read data referring to in this chunk
+				dataChunk := make([]byte, valuePointer.size)
+				if _, err = db.data.ReadAt(dataChunk, int64(valuePointer.offset)); err != nil {
+					return fmt.Errorf("failed to read file at %v: %v", valuePointer.offset, err)
+				}
+
+				// update offset in dict entry
+				valuePointer.offset = dataWriteOffset
+
+				// update and move chunk in dictionary
+				if _, err := db.dict.WriteAt(EncodeValuePointer(valuePointer), dictWriteOffset); err != nil {
+					return fmt.Errorf("failed to shift valuePointer: %v", err)
+				}
+
+				// move actual data
+				// TODO: if this fails the database is corrupt
+				if _, err := db.data.WriteAt(dataChunk, int64(dataWriteOffset)); err != nil {
+					return fmt.Errorf("failed to shift valuePointer: %v", err)
+				}
+			}
+
+			dataWriteOffset += valuePointer.size
+			dictWriteOffset += ValuePointerSize
+		}
+
+		dictReadOffset += ValuePointerSize
 	}
 
-	// truncate file
-	if err := db.dict.Truncate(writeOffset); err != nil {
+	// truncate files
+	if err := TruncateAndSeek(db.dict, dictWriteOffset); err != nil {
 		return fmt.Errorf("failed to truncate dictionary: %v", err)
-	} else if _, err := db.dict.Seek(0, 0); err != nil {
-		return fmt.Errorf("failed reset dictionary: %v", err)
+	}
+
+	if err := TruncateAndSeek(db.data, int64(dataWriteOffset)); err != nil {
+		return fmt.Errorf("failed to truncate data: %v", err)
 	}
 
 	return nil

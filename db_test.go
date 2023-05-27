@@ -11,6 +11,7 @@ import (
 
 var dbIndex = 0
 
+// TODO: simplify
 func testDb(t *testing.T, run func(db *DB)) {
 	dir, err := os.Getwd()
 	assert.Nil(t, err)
@@ -122,8 +123,8 @@ func TestDB_Size(t *testing.T) {
 
 func TestDB_RunGC(t *testing.T) {
 	testDb(t, func(db *DB) {
-		db.Set([]byte("foo"), []byte("bare"))
-		db.Set([]byte("baz"), []byte("bam"))
+		db.Set([]byte("foo"), []byte("bam"))
+		db.Set([]byte("baz"), []byte("bare"))
 		db.Set([]byte("boo"), []byte("var"))
 
 		size, _ := db.Stat()
@@ -131,8 +132,8 @@ func TestDB_RunGC(t *testing.T) {
 		assert.Equal(t, size.data, uint32(10))
 		assert.Equal(t, size.entries, uint32(3))
 
+		db.Delete([]byte("foo"))
 		db.Delete([]byte("boo"))
-		db.Delete([]byte("baz"))
 
 		size, _ = db.Stat()
 		assert.Equal(t, size.dict, uint32(ValuePointerSize*3))
@@ -142,9 +143,13 @@ func TestDB_RunGC(t *testing.T) {
 		err := db.RunGC()
 		assert.Nil(t, err)
 
+		data, err := db.Get([]byte("baz"))
+		assert.Nil(t, err)
+		assert.Equal(t, data, []byte("bare"))
+
 		size, _ = db.Stat()
 		assert.Equal(t, size.dict, uint32(ValuePointerSize))
-		// TODO: assert.Equal(t, size.data, uint32(4))
+		assert.Equal(t, size.data, uint32(4))
 		assert.Equal(t, size.entries, uint32(1))
 	})
 }

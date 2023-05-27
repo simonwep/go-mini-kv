@@ -24,9 +24,9 @@ func DecodeValuePointer(data []byte) (*ValuePointer, error) {
 	}
 
 	return &ValuePointer{
-		hash:   data[:32],
-		offset: decodeUint32(data[32:36]),
-		size:   decodeUint32(data[36:40]),
+		hash:   GetValuePointerHash(data),
+		offset: GetValuePointerOffset(data),
+		size:   GetValuePointerSize(data),
 	}, nil
 }
 
@@ -38,8 +38,24 @@ func EncodeValuePointer(pointer *ValuePointer) []byte {
 	return data
 }
 
+func (v *ValuePointer) IsEmpty() bool {
+	return v.offset == 0
+}
+
 func IsValuePointerEmpty(data []byte) bool {
 	return decodeUint32(data[32:36]) == 0
+}
+
+func GetValuePointerHash(data []byte) []byte {
+	return data[:32]
+}
+
+func GetValuePointerSize(data []byte) uint32 {
+	return decodeUint32(data[36:40])
+}
+
+func GetValuePointerOffset(data []byte) uint32 {
+	return decodeUint32(data[32:36])
 }
 
 func encodeUint32(v uint32) []byte {
