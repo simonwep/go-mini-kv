@@ -93,20 +93,21 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	return buffer, nil
 }
 
-// Delete removes a key and the value associated.
-// TODO: allow list of keys
-func (db *DB) Delete(key []byte) (bool, error) {
-	pointer, offset, err := db.findValuePointerForKey(key)
+// Delete removes the given keys and the value associated.
+func (db *DB) Delete(keys ...[]byte) (bool, error) {
+	for _, key := range keys {
+		pointer, offset, err := db.findValuePointerForKey(key)
 
-	if err != nil {
-		return false, fmt.Errorf("failed to retrieve pointer: %v", err)
-	} else if pointer == nil {
-		return false, nil
-	}
+		if err != nil {
+			return false, fmt.Errorf("failed to retrieve pointer: %v", err)
+		} else if pointer == nil {
+			return false, nil
+		}
 
-	zeroedChunk := make([]byte, ValuePointerSize)
-	if _, err := db.dict.WriteAt(zeroedChunk, int64(offset)); err != nil {
-		return false, fmt.Errorf("failed to write to file: %v", err)
+		zeroedChunk := make([]byte, ValuePointerSize)
+		if _, err := db.dict.WriteAt(zeroedChunk, int64(offset)); err != nil {
+			return false, fmt.Errorf("failed to write to file: %v", err)
+		}
 	}
 
 	return true, nil
@@ -133,7 +134,6 @@ func (db *DB) Stat() (*DataBaseStats, error) {
 
 // RunGC runs the garbage collector to compress both the value pointer file
 // and remove no longer needed data from the data file.
-// TODO: keep track of offset for removal
 func (db *DB) RunGC() error {
 	dictChunk := make([]byte, ValuePointerSize)
 	dictWriteOffset := int64(0)

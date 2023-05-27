@@ -131,8 +131,7 @@ func TestDB_RunGC(t *testing.T) {
 		assert.Equal(size.data, uint32(10))
 		assert.Equal(size.entries, uint32(3))
 
-		db.Delete([]byte("foo"))
-		db.Delete([]byte("boo"))
+		db.Delete([]byte("foo"), []byte("boo"))
 
 		size, _ = db.Stat()
 		assert.Equal(size.dict, uint32(ValuePointerSize*3))
