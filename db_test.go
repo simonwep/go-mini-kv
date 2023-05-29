@@ -1,7 +1,9 @@
 package go_mini_kv
 
 import (
+	crypto "crypto/rand"
 	"github.com/stretchr/testify/assert"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -40,8 +42,7 @@ func TestDB_Set(t *testing.T) {
 	testDb(t, func(db *DB, assert *assert.Assertions) {
 
 		// Set a value
-		err := db.Set([]byte("hello"), []byte("world"))
-		assert.Nil(err)
+		assert.Nil(db.Set([]byte("hello"), []byte("world")))
 	})
 }
 
@@ -60,8 +61,7 @@ func TestDB_Get(t *testing.T) {
 			bKey := []byte(key)
 			bValue := []byte(value)
 
-			err := db.Set(bKey, bValue)
-			assert.Nil(err)
+			assert.Nil(db.Set(bKey, bValue))
 
 			result, err := db.Get(bKey)
 			assert.Nil(err)
@@ -149,5 +149,63 @@ func TestDB_RunGC(t *testing.T) {
 		assert.Equal(size.dict, uint32(ValuePointerSize))
 		assert.Equal(size.data, uint32(4))
 		assert.Equal(size.entries, uint32(1))
+	})
+}
+
+func TestLargeData(t *testing.T) {
+	testDb(t, func(db *DB, assert *assert.Assertions) {
+		const tests = 1000
+
+		// Test database against a local map
+		data := make([][][]byte, tests)
+		removed := make(map[int]bool, tests)
+
+		// verify compares the data in the database with the one
+		// in memory
+		verify := func() {
+			for i := 0; i < tests; i++ {
+				data := data[i]
+				result, err := db.Get(data[0])
+				assert.Nil(err)
+
+				if _, removed := removed[i]; removed {
+					assert.Nil(result)
+				} else {
+					assert.Equal(data[1], result)
+				}
+			}
+		}
+
+		// Add random data
+		for i := 0; i < tests; i++ {
+			key := []byte(strconv.FormatInt(int64(i), 10))
+			value := make([]byte, rand.Intn(100))
+			crypto.Read(value)
+
+			data[i] = [][]byte{key, value}
+			assert.Nil(db.Set(key, value))
+		}
+
+		verify()
+
+		// Delete half of the data
+		for i := 0; i < tests/2; i++ {
+			index := rand.Intn(len(data))
+			_, alreadyRemoved := removed[index]
+			removed[index] = true
+
+			ok, err := db.Delete(data[index][0])
+			assert.Nil(err)
+			assert.Equal(!alreadyRemoved, ok)
+		}
+
+		verify()
+
+		assert.Nil(db.RunGC())
+		verify()
+
+		stats, err := db.Stat()
+		assert.Nil(err)
+		assert.Equal(stats.entries, uint32(tests-len(removed)))
 	})
 }

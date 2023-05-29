@@ -175,9 +175,9 @@ func (db *DB) RunGC() error {
 				}
 
 				// move actual data
-				// TODO: if this fails the database is corrupt
+				// TODO: if this fails, the database is corrupt
 				if _, err := db.data.WriteAt(dataChunk, int64(dataWriteOffset)); err != nil {
-					return fmt.Errorf("failed to shift valuePointer: %v", err)
+					return fmt.Errorf("failed to shift data: %v", err)
 				}
 			}
 
